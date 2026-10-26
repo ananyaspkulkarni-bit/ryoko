@@ -1,0 +1,168 @@
+/* --------------------------------------------------
+ * RYOKO DESIGN SYSTEM TOKENS & VISUAL FOUNDATION
+ * Source of Truth: Attached Color Reference Image
+ * Warm, botanical, earthy, playful, vintage, storybook
+ * -------------------------------------------------- */
+
+:root {
+  /* Official Brand Color Palette */
+  --color-ylang-ylang: #FFD84D; /* Sunshine Yellow */
+  --color-bamboo: #8FA838;     /* Botanical Leaf Accent */
+  --color-cypress: #245C36;    /* Jungle Green */
+  --color-chrysanthemum: #F07870; /* Warm Coral */
+  --color-wild-berry: #701C38; /* Deep Coral/Berry Contrast */
+
+  --color-blush-rose: #F07870; /* Warm Coral Accent */
+  --color-tomato-jam: #D83B34; /* Vibrant Accent Border */
+  --color-vanilla-custard: #FFF4DB; /* Warm Paper */
+  --color-princeton-orange: #FC8A2D; /* Action Callout */
+  --color-olive: #6D821B;
+
+  --color-bright-marine: #247BA0; /* Deep Ocean */
+  --color-lime-moss: #769E26;
+  --color-aquamarine: #62D6C5; /* Sky Turquoise */
+  --color-turquoise: #62D6C5;  /* Sky Turquoise */
+  --color-grey-olive: #7DA4A8;
+  --color-leaf-green: #245C36;
+  --color-deep-shadow-green: #173C23; /* Deep Jungle Green for titles */
+
+  /* Legacy & Semantic Mappings for Rich Multi-Color System */
+  --color-deep-forest: var(--color-cypress);
+  --color-moss: #42784A;
+  --color-cream: var(--color-vanilla-custard);
+  --color-rosy-brown: var(--color-chrysanthemum);
+  --color-midnight-green: var(--color-bright-marine);
+  --color-soft-sky: var(--color-aquamarine);
+  --color-warm-sand: #F6E5BF;
+  --color-deep-brown: #2B2117;
+
+  /* Semantic Surface & Layout Tokens */
+  --bg-primary: #FFF4DB; /* Warm Paper background */
+  --bg-surface: #FDF0D0; /* Storybook warm paper surface */
+  --bg-surface-elevated: #FFF9EB; /* Crisp warm paper elevation */
+  --bg-accent: var(--color-aquamarine);
+  --bg-dark: var(--color-cypress);
+
+  /* Deep Earthy Text Hierarchy (Never Pure Black) */
+  --text-primary: #2B2117; /* Warm dark botanical wood brown */
+  --text-heading: var(--color-deep-shadow-green); /* Deep shadow green for titles */
+  --text-secondary: var(--color-cypress);
+  --text-muted: #6E5C4A;
+  --text-on-dark: #FFF9EB;
+
+  /* Organic Storybook Borders */
+  --border-color: rgba(36, 92, 54, 0.20);
+  --border-strong: rgba(36, 92, 54, 0.35);
+  --border-accent: var(--color-chrysanthemum);
+
+  /* Focus Indicator for Accessibility */
+  --focus-ring: 2px solid var(--color-bright-marine);
+  --focus-offset: 3px;
+
+  /* Typography Tokens */
+  --font-family-serif: 'Playfair Display', Georgia, serif;
+  --font-family-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-family-mono: 'JetBrains Mono', Courier, monospace;
+
+  /* Spacing Tokens */
+  --space-2xs: 0.125rem;
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+
+  /* Organic & Tactile Shape Tokens */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-full: 9999px;
+
+  /* Tactile Shadows & Paper Elevation */
+  --shadow-sm: 0 2px 4px rgba(58, 39, 29, 0.06);
+  --shadow-journal: 0 4px 20px -2px rgba(102, 116, 54, 0.14), 0 2px 6px -1px rgba(98, 30, 62, 0.08);
+  --shadow-postcard: 0 10px 30px -5px rgba(58, 39, 29, 0.16), 0 4px 10px -2px rgba(217, 130, 141, 0.12);
+  --shadow-modal: 0 20px 50px rgba(58, 39, 29, 0.28);
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-spring: 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  --transition-smooth: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Global Reset & Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-family-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Accessible Focus States */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* Subtle Paper Grain & Grid Overlay Utilities */
+.paper-texture {
+  background-color: var(--bg-surface);
+  background-image: radial-gradient(rgba(58, 39, 29, 0.05) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.paper-card-border {
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-journal);
+  position: relative;
+}
+
+.paper-card-border::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3.5px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--color-chrysanthemum) 0,
+    var(--color-chrysanthemum) 12px,
+    var(--color-aquamarine) 12px,
+    var(--color-aquamarine) 24px,
+    var(--color-ylang-ylang) 24px,
+    var(--color-ylang-ylang) 36px
+  );
+  border-top-left-radius: var(--radius-sm);
+  border-top-right-radius: var(--radius-sm);
+}
+
+/* Editorial Typography Utility Classes */
+.font-serif {
+  font-family: var(--font-family-serif);
+}
+
+.font-sans {
+  font-family: var(--font-family-sans);
+}
+
+/* Reduced Motion Handling */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
