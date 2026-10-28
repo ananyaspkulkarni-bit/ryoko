@@ -305,4 +305,103 @@ describe('Hybrid Planning UI Integration & Session Coordination Suite', () => {
     expect(preferences.travelStyle).toBe('foodie');
     expect(preferences.interests).toContain('japan');
   });
+
+  describe('Queue Integration in PlanningSession Suite', () => {
+    it('manages requestQueue FIFO processing and reports pending queue size', async () => {
+      const session = new PlanningSession();
+      expect(session.getPendingQueueSize()).toBe(0);
+      expect(session.getRequestQueue()).toBeDefined();
+      expect(session.getRequestQueue().isEmpty()).toBe(true);
+
+      const plan1Promise = session.requestPlan(
+        { destinationId: 'paris', days: 1, travelers: 1, budget: 300, travelStyle: 'culture' },
+        () => {}
+      );
+      const plan2Promise = session.requestPlan(
+        { destinationId: 'cairo', days: 2, travelers: 2, budget: 500, travelStyle: 'culture' },
+        () => {}
+      );
+
+      const [res1, res2] = await Promise.all([plan1Promise, plan2Promise]);
+
+      // Request 1 was superseded by Request 2, so it resolved null
+      expect(res1).toBeNull();
+      // Request 2 resolved successfully as the active request
+      expect(res2).toBeDefined();
+      expect(res2!.destinationId).toBe('cairo');
+      expect(session.getPendingQueueSize()).toBe(0);
+      expect(session.getRequestQueue().isEmpty()).toBe(true);
+    });
+
+    it('processes queued requests sequentially in FIFO order when requests complete', async () => {
+      const session = new PlanningSession();
+      const executionOrder: string[] = [];
+
+      // Sequential requests
+      const planA = await session.requestPlan(
+        { destinationId: 'paris', days: 1, travelers: 1, budget: 300, travelStyle: 'culture' },
+        () => {}
+      );
+      executionOrder.push(planA!.destinationId);
+
+      const planB = await session.requestPlan(
+        { destinationId: 'tokyo', days: 2, travelers: 1, budget: 400, travelStyle: 'foodie' },
+        () => {}
+      );
+      executionOrder.push(planB!.destinationId);
+
+      const planC = await session.requestPlan(
+        { destinationId: 'cairo', days: 3, travelers: 2, budget: 600, travelStyle: 'culture' },
+        () => {}
+      );
+      executionOrder.push(planC!.destinationId);
+
+      expect(executionOrder).toEqual(['paris', 'tokyo', 'cairo']);
+    });
+
+    it('queue does not deadlock or block if a planning request encounters an error', async () => {
+      class ErrorOnParisAdapter implements IAIPlanningAdapter {
+        public async generatePlanProposal(input: AIPlanInput): Promise<AIPlanOutput> {
+          if (input.destinationId === 'paris') {
+            throw new Error('Planned Paris failure');
+          }
+          return {
+            tripTitle: `${input.destinationName} Trip`,
+            summary: `Trip for ${input.destinationName}`,
+            days: [],
+          };
+        }
+      }
+
+      const session = new PlanningSession(new HybridPlanningService(new ErrorOnParisAdapter()));
+
+      // Request 1 (Paris) will trigger adapter error, fallback deterministically
+      const res1 = await session.requestPlan(
+        { destinationId: 'paris', days: 1, travelers: 1, budget: 300, travelStyle: 'culture' },
+        () => {}
+      );
+      expect(res1).toBeDefined();
+      expect(res1!.destinationId).toBe('paris');
+
+      // Request 2 (Tokyo) must process cleanly without being blocked by previous request
+      const res2 = await session.requestPlan(
+        { destinationId: 'tokyo', days: 2, travelers: 1, budget: 400, travelStyle: 'foodie' },
+        () => {}
+      );
+      expect(res2).toBeDefined();
+      expect(res2!.destinationId).toBe('tokyo');
+      expect(session.getPendingQueueSize()).toBe(0);
+    });
+
+    it('cancel empties the requestQueue immediately and increments activeRequestId', async () => {
+      const session = new PlanningSession();
+      const initialId = session.getActiveRequestId();
+
+      session.cancel();
+      expect(session.getActiveRequestId()).toBe(initialId + 1);
+      expect(session.getPendingQueueSize()).toBe(0);
+      expect(session.getRequestQueue().isEmpty()).toBe(true);
+    });
+  });
 });
+

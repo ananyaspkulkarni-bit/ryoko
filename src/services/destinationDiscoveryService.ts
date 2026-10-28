@@ -1,4 +1,5 @@
 import { MOCK_DESTINATIONS } from '../data/destinations';
+import { destinationMap } from '../ds/DestinationMap';
 import { WORLD_COUNTRIES } from '../data/countriesGeo';
 import {
   findCityByNameOrAlias,
@@ -53,14 +54,7 @@ export class DestinationDiscoveryService implements IDestinationDiscoveryService
    */
   public isCuratedDestination(destinationId: string): boolean {
     if (!destinationId) return false;
-    const lower = destinationId.trim().toLowerCase();
-    return MOCK_DESTINATIONS.some(
-      (d) =>
-        d.id.toLowerCase() === lower ||
-        d.name.toLowerCase() === lower ||
-        (d.primaryCity && d.primaryCity.toLowerCase() === lower) ||
-        d.country.toLowerCase() === lower
-    );
+    return destinationMap.has(destinationId);
   }
 
   /**
@@ -88,14 +82,11 @@ export class DestinationDiscoveryService implements IDestinationDiscoveryService
     if (typeof queryInput === 'object') {
       const searchKey = (queryInput.id || queryInput.name || queryInput.primaryCity || queryInput.country || '').trim().toLowerCase();
       
-      const curatedMatch = MOCK_DESTINATIONS.find(
-        (d) =>
-          d.id.toLowerCase() === searchKey ||
-          d.name.toLowerCase() === searchKey ||
-          (d.primaryCity && d.primaryCity.toLowerCase() === searchKey) ||
-          d.country.toLowerCase() === searchKey ||
-          (queryInput.countryCode && d.countryCode && d.countryCode.toLowerCase() === queryInput.countryCode.toLowerCase())
-      );
+      const curatedMatch =
+        (queryInput.id ? destinationMap.get(queryInput.id) : undefined) ||
+        destinationMap.get(searchKey) ||
+        (queryInput.primaryCity ? destinationMap.get(queryInput.primaryCity) : undefined) ||
+        (queryInput.countryCode ? destinationMap.get(queryInput.countryCode) : undefined);
 
       if (curatedMatch) {
         return {
@@ -182,15 +173,8 @@ export class DestinationDiscoveryService implements IDestinationDiscoveryService
       };
     }
 
-    // A. Check for EXACT match in MOCK_DESTINATIONS (takes precedence)
-    const exactCurated = MOCK_DESTINATIONS.find(
-      (d) =>
-        d.id.toLowerCase() === search ||
-        d.name.toLowerCase() === search ||
-        (d.primaryCity && d.primaryCity.toLowerCase() === search) ||
-        d.country.toLowerCase() === search ||
-        (d.countryCode && d.countryCode.toLowerCase() === search)
-    );
+    // A. Check for EXACT match in destinationMap (takes precedence, O(1) average lookup)
+    const exactCurated = destinationMap.get(search);
 
     if (exactCurated) {
       return {

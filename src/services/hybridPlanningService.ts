@@ -7,6 +7,7 @@ import { ItineraryValidator, itineraryValidator } from './itineraryValidator';
 import { FallbackDeterministicAdapter, type IAIPlanningAdapter } from './aiPlanningAdapter';
 
 import { destinationDiscoveryService } from './destinationDiscoveryService';
+import { Queue } from '../ds/Queue';
 
 export class HybridPlanningService {
   private adapter: IAIPlanningAdapter;
@@ -127,19 +128,34 @@ export interface PlanningSessionState {
   error: string | null;
 }
 
+export interface QueuedPlanningRequest {
+  id: number;
+  preferences: TripPreferences;
+  onStateChange: (state: PlanningSessionState) => void;
+  previousPlan: GeneratedItineraryPlan | null;
+  resolve: (plan: GeneratedItineraryPlan | null) => void;
+  reject: (err: unknown) => void;
+}
+
 /**
  * Manages asynchronous planning execution lifecycle, loading/error states,
- * and out-of-order race condition guards (preventing stale responses from overwriting newer ones).
+ * and out-of-order race condition guards using a FIFO Queue (First In, First Out).
  */
 export class PlanningSession {
   private activeRequestId = 0;
   private lastResolvedPlan: GeneratedItineraryPlan | null = null;
   private service: HybridPlanningService;
+  private requestQueue = new Queue<QueuedPlanningRequest>();
+  private isProcessing = false;
 
   constructor(service: HybridPlanningService = hybridPlanningService) {
     this.service = service;
   }
 
+  /**
+   * Enqueues an itinerary planning request into the FIFO Queue.
+   * If the queue worker is idle, processing begins immediately in FIFO order.
+   */
   public async requestPlan(
     preferences: TripPreferences,
     onStateChange: (state: PlanningSessionState) => void,
@@ -149,25 +165,74 @@ export class PlanningSession {
     const initialPlan = previousPlan ?? this.lastResolvedPlan;
     onStateChange({ plan: initialPlan, isLoading: true, error: null });
 
+    return new Promise<GeneratedItineraryPlan | null>((resolve, reject) => {
+      this.requestQueue.enqueue({
+        id: requestId,
+        preferences,
+        onStateChange,
+        previousPlan: initialPlan,
+        resolve,
+        reject,
+      });
+
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Processes queued planning requests in strict FIFO order.
+   * Discards stale requests so older requests never overwrite newer ones.
+   * Catches errors so the queue never blocks.
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing) {
+      return;
+    }
+    this.isProcessing = true;
+
     try {
-      const plan = await this.service.planTrip(preferences);
-      if (requestId === this.activeRequestId) {
-        this.lastResolvedPlan = plan;
-        onStateChange({ plan, isLoading: false, error: null });
-        return plan;
+      while (!this.requestQueue.isEmpty()) {
+        const item = this.requestQueue.dequeue();
+        if (!item) break;
+
+        // If superseded by a newer request before execution starts, skip execution
+        if (item.id !== this.activeRequestId) {
+          item.resolve(null);
+          continue;
+        }
+
+        try {
+          const plan = await this.service.planTrip(item.preferences);
+          if (item.id === this.activeRequestId) {
+            this.lastResolvedPlan = plan;
+            item.onStateChange({ plan, isLoading: false, error: null });
+            item.resolve(plan);
+          } else {
+            // Superseded while awaiting asynchronous plan generation
+            item.resolve(null);
+          }
+        } catch (err) {
+          if (item.id === this.activeRequestId) {
+            const errorMsg = err instanceof Error ? err.message : 'Planning failed';
+            item.onStateChange({ plan: item.previousPlan, isLoading: false, error: errorMsg });
+          }
+          item.resolve(null);
+        }
       }
-      return null; // Stale request discarded
-    } catch (err) {
-      if (requestId === this.activeRequestId) {
-        const errorMsg = err instanceof Error ? err.message : 'Planning failed';
-        onStateChange({ plan: initialPlan, isLoading: false, error: errorMsg });
+    } finally {
+      this.isProcessing = false;
+      if (!this.requestQueue.isEmpty()) {
+        this.processQueue();
       }
-      return null;
     }
   }
 
   public cancel(): void {
     this.activeRequestId++;
+    while (!this.requestQueue.isEmpty()) {
+      const item = this.requestQueue.dequeue();
+      item?.resolve(null);
+    }
   }
 
   public getActiveRequestId(): number {
@@ -176,6 +241,14 @@ export class PlanningSession {
 
   public getLastResolvedPlan(): GeneratedItineraryPlan | null {
     return this.lastResolvedPlan;
+  }
+
+  public getPendingQueueSize(): number {
+    return this.requestQueue.size();
+  }
+
+  public getRequestQueue(): Queue<QueuedPlanningRequest> {
+    return this.requestQueue;
   }
 }
 

@@ -1,4 +1,5 @@
 import { MOCK_DESTINATIONS } from '../../data/destinations';
+import { destinationMap } from '../../ds/DestinationMap';
 import { WORLD_COUNTRIES } from '../../data/countriesGeo';
 import { searchWorldCities, cityToDestination } from '../../data/worldCities';
 import { Trie } from '../../ds/Trie';
@@ -84,7 +85,7 @@ export class DestinationSearchService implements IDestinationSearchService {
   }
 
   getDestinationById(id: string): Destination | undefined {
-    return MOCK_DESTINATIONS.find((d) => d.id === id);
+    return destinationMap.get(id);
   }
 
   getAllDestinations(): Destination[] {

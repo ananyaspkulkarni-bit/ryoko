@@ -1,4 +1,5 @@
 import type { Destination } from '../types';
+import { destinationMap } from '../ds/DestinationMap';
 
 export const MOCK_DESTINATIONS: Destination[] = [
   {
@@ -531,6 +532,9 @@ export const MOCK_DESTINATIONS: Destination[] = [
   },
 ];
 
+// Populate DestinationMap hash map with canonical destinations
+destinationMap.populate(MOCK_DESTINATIONS);
+
 /**
  * Resolves full destination data for any selected destination or string query.
  * Never defaults to Paris or France for another country or city.
@@ -558,14 +562,15 @@ export function getDestinationData(destinationInput?: Destination | Partial<Dest
       return defaultParis;
     }
 
-    const matched = MOCK_DESTINATIONS.find(
-      (d) =>
-        d.id.toLowerCase() === searchStr ||
-        d.name.toLowerCase() === searchStr ||
-        (d.primaryCity && d.primaryCity.toLowerCase() === searchStr) ||
-        d.country.toLowerCase() === searchStr ||
-        (d.countryCode && d.countryCode.toLowerCase() === searchStr) ||
-        d.tags.some((t) => t.toLowerCase() === searchStr)
+    // 1. O(1) average lookup via DestinationMap hash map
+    const fastMatch = destinationMap.get(searchStr);
+    if (fastMatch) {
+      return fastMatch;
+    }
+
+    // Secondary fallback: tag matching
+    const matched = MOCK_DESTINATIONS.find((d) =>
+      d.tags.some((t) => t.toLowerCase() === searchStr)
     );
 
     if (matched) {
@@ -624,14 +629,21 @@ export function getDestinationData(destinationInput?: Destination | Partial<Dest
   const inputName = formatName(destinationInput.name || destinationInput.primaryCity || destinationInput.country || 'Destination');
   const inputCountry = formatName(destinationInput.country || inputName);
 
+  // 1. Fast O(1) hash map lookup
+  const fastObjectMatch =
+    (destinationInput.id ? destinationMap.get(destinationInput.id) : undefined) ||
+    destinationMap.get(inputName) ||
+    (destinationInput.primaryCity ? destinationMap.get(destinationInput.primaryCity) : undefined) ||
+    (destinationInput.countryCode ? destinationMap.get(destinationInput.countryCode) : undefined);
+
+  if (fastObjectMatch) {
+    return fastObjectMatch;
+  }
+
   const matched = MOCK_DESTINATIONS.find(
     (d) =>
-      (destinationInput.id && d.id.toLowerCase() === destinationInput.id.toLowerCase()) ||
-      d.name.toLowerCase() === inputName.toLowerCase() ||
-      (d.primaryCity && d.primaryCity.toLowerCase() === inputName.toLowerCase()) ||
       d.country.toLowerCase() === inputCountry.toLowerCase() ||
-      d.country.toLowerCase() === inputName.toLowerCase() ||
-      (d.countryCode && destinationInput.countryCode && d.countryCode.toLowerCase() === destinationInput.countryCode.toLowerCase())
+      d.country.toLowerCase() === inputName.toLowerCase()
   );
 
   if (matched) {

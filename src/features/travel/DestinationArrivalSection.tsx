@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Stack } from '../../ds';
 import { motion } from 'framer-motion';
 import { PaperCard } from '../../components/ui/PaperCard';
 import { Button } from '../../components/ui/Button';
@@ -107,18 +108,132 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
 
   const [planningSession] = useState(() => new PlanningSession(hybridPlanningService));
 
+  // ITINERARY HISTORY STACK (LIFO) FOR PLAN-LEVEL UNDO
+  const [itineraryHistoryStack] = useState(() => new Stack<ComprehensiveItineraryPlan>());
+  const [historySize, setHistorySize] = useState<number>(0);
+  const currentPlanRef = useRef<ComprehensiveItineraryPlan | null>(null);
+  const isRestoringPlanRef = useRef<boolean>(false);
+
   // ITINERARY INTERACTIVE STATE (COMPLETION & REMOVAL/RESTORE)
   const [completedItemIds, setCompletedItemIds] = useState<Set<string>>(new Set());
   const [removedItemIds, setRemovedItemIds] = useState<Set<string>>(new Set());
   const [lastRemovedItem, setLastRemovedItem] = useState<{ id: string; title: string; dayNumber?: number } | null>(null);
+  const [removedHistory, setRemovedHistory] = useState<Array<{ id: string; title: string; dayNumber?: number }>>([]);
+
+  // Validate that an itinerary plan is non-empty and well-formed
+  const isValidPlan = (
+    plan: ComprehensiveItineraryPlan | null | undefined
+  ): plan is ComprehensiveItineraryPlan => {
+    if (!plan) return false;
+    if (!plan.destinationId) return false;
+    if (!Array.isArray(plan.comprehensiveDays) || plan.comprehensiveDays.length === 0) return false;
+    const totalItems = plan.comprehensiveDays.reduce(
+      (sum, d) => sum + (d.timelineItems?.length || 0),
+      0
+    );
+    return totalItems > 0;
+  };
+
+  // Compare whether two plans are identical to avoid redundant history entries
+  const arePlansEqual = (
+    a: ComprehensiveItineraryPlan | null | undefined,
+    b: ComprehensiveItineraryPlan | null | undefined
+  ): boolean => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    if (
+      a.destinationId !== b.destinationId ||
+      a.totalDays !== b.totalDays ||
+      a.pace !== b.pace ||
+      a.travelStyle !== b.travelStyle ||
+      a.totalEstimatedCost !== b.totalEstimatedCost ||
+      a.isWeatherAdapted !== b.isWeatherAdapted ||
+      a.isRoutesVerified !== b.isRoutesVerified
+    ) {
+      return false;
+    }
+    const itemsA = a.comprehensiveDays?.flatMap((d) => d.timelineItems.map((i) => i.id)) || [];
+    const itemsB = b.comprehensiveDays?.flatMap((d) => d.timelineItems.map((i) => i.id)) || [];
+    if (itemsA.length !== itemsB.length) return false;
+    for (let i = 0; i < itemsA.length; i++) {
+      if (itemsA[i] !== itemsB[i]) return false;
+    }
+    return true;
+  };
+
+  // Applies a new plan, pushing previous valid plan onto history stack (LIFO) if changed
+  const applyPlan = useCallback(
+    (nextPlan: ComprehensiveItineraryPlan, options?: { skipHistory?: boolean }) => {
+      if (!isValidPlan(nextPlan)) {
+        return;
+      }
+
+      const prevPlan = currentPlanRef.current;
+      if (prevPlan && prevPlan.destinationId !== nextPlan.destinationId) {
+        itineraryHistoryStack.clear();
+        setHistorySize(0);
+      } else if (!options?.skipHistory && isValidPlan(prevPlan) && !arePlansEqual(prevPlan, nextPlan)) {
+        itineraryHistoryStack.push(prevPlan);
+        setHistorySize(itineraryHistoryStack.size());
+      }
+
+      currentPlanRef.current = nextPlan;
+      setComprehensivePlan(nextPlan);
+      setGeneratedPlan(nextPlan);
+      setPlanError(null);
+    },
+    [itineraryHistoryStack]
+  );
+
+  // Restores the most recent saved itinerary from the Stack (LIFO)
+  const undoLastPlan = () => {
+    if (itineraryHistoryStack.isEmpty()) {
+      return;
+    }
+    const restoredPlan = itineraryHistoryStack.pop();
+    setHistorySize(itineraryHistoryStack.size());
+    if (!restoredPlan) {
+      return;
+    }
+
+    const preferencesChanged =
+      (restoredPlan.totalDays !== undefined && restoredPlan.totalDays !== days) ||
+      (restoredPlan.pace !== undefined && restoredPlan.pace !== pace) ||
+      (restoredPlan.travelStyle !== undefined && restoredPlan.travelStyle !== travelStyle);
+
+    if (preferencesChanged) {
+      isRestoringPlanRef.current = true;
+      if (restoredPlan.totalDays !== undefined && restoredPlan.totalDays !== days) {
+        setDays(restoredPlan.totalDays);
+      }
+      if (restoredPlan.pace !== undefined && restoredPlan.pace !== pace) {
+        setPace(restoredPlan.pace);
+      }
+      if (restoredPlan.travelStyle !== undefined && restoredPlan.travelStyle !== travelStyle) {
+        setTravelStyle(restoredPlan.travelStyle);
+      }
+    }
+
+    currentPlanRef.current = restoredPlan;
+    setComprehensivePlan(restoredPlan);
+    setGeneratedPlan(restoredPlan);
+    setPlanError(null);
+    setRemovedItemIds(new Set());
+    setCompletedItemIds(new Set());
+    setLastRemovedItem(null);
+    setRemovedHistory([]);
+  };
 
   // Reset interactive overrides when destination changes
   const [prevDestId, setPrevDestId] = useState(dest.id);
   if (prevDestId !== dest.id) {
     setPrevDestId(dest.id);
+    itineraryHistoryStack.clear();
+    setHistorySize(0);
     setCompletedItemIds(new Set());
     setRemovedItemIds(new Set());
     setLastRemovedItem(null);
+    setRemovedHistory([]);
   }
 
   const toggleItemCompleted = (itemId: string) => {
@@ -139,23 +254,30 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
       next.add(itemId);
       return next;
     });
-    setLastRemovedItem({ id: itemId, title, dayNumber });
+    const entry = { id: itemId, title, dayNumber };
+    setLastRemovedItem(entry);
+    setRemovedHistory((prev) => [...prev, entry]);
   };
 
-  const undoRemoveItem = (itemId: string) => {
-    setRemovedItemIds((prev) => {
-      const next = new Set(prev);
-      next.delete(itemId);
-      return next;
+  const undoRemoveItem = (targetId?: string) => {
+    setRemovedHistory((prevHistory) => {
+      if (prevHistory.length === 0) return prevHistory;
+      const idToRestore = targetId || prevHistory[prevHistory.length - 1].id;
+      setRemovedItemIds((prev) => {
+        const next = new Set(prev);
+        next.delete(idToRestore);
+        return next;
+      });
+      const nextHistory = prevHistory.filter((item) => item.id !== idToRestore);
+      setLastRemovedItem(nextHistory.length > 0 ? nextHistory[nextHistory.length - 1] : null);
+      return nextHistory;
     });
-    if (lastRemovedItem?.id === itemId) {
-      setLastRemovedItem(null);
-    }
   };
 
   const restoreAllItems = () => {
     setRemovedItemIds(new Set());
     setLastRemovedItem(null);
+    setRemovedHistory([]);
   };
 
   const restoreDayItems = (dayItemIds: string[]) => {
@@ -166,10 +288,42 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
       }
       return next;
     });
+    setRemovedHistory((prev) => prev.filter((item) => !dayItemIds.includes(item.id)));
+    setLastRemovedItem((prev) => (prev && dayItemIds.includes(prev.id) ? null : prev));
+  };
+
+  const regenerateItinerary = () => {
+    setRemovedItemIds(new Set());
+    setCompletedItemIds(new Set());
+    setLastRemovedItem(null);
+    setRemovedHistory([]);
+    try {
+      const plan = itineraryPlanningEngine.planTrip({
+        destinationId: dest.id,
+        days,
+        travelers,
+        budget: budgetUsd,
+        travelStyle,
+        pace,
+        startDate,
+        interests: dest.tags || [],
+        includeMeals: true,
+        weatherForecast: weather?.forecast,
+      });
+      applyPlan(plan);
+    } catch (err) {
+      console.warn('Failed to regenerate itinerary:', err);
+    }
   };
 
   // TRIGGER HYBRID & PLANNING ENGINE ON PREFERENCES / DESTINATION CHANGE
   useEffect(() => {
+    if (isRestoringPlanRef.current) {
+      isRestoringPlanRef.current = false;
+      setIsLoading(false);
+      return;
+    }
+
     let isCancelled = false;
     setIsLoading(true);
 
@@ -199,9 +353,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
       });
 
       if (!isCancelled) {
-        setComprehensivePlan(plan);
-        setGeneratedPlan(plan);
-        setPlanError(null);
+        applyPlan(plan);
       }
     } catch (err) {
       console.warn('ItineraryPlanningEngine fallback error:', err);
@@ -333,8 +485,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                 includeMeals: true,
                 weatherForecast: wthr.forecast,
               });
-              setComprehensivePlan(weatherPlan);
-              setGeneratedPlan(weatherPlan);
+              applyPlan(weatherPlan, { skipHistory: true });
             } catch (e) {
               console.warn('Weather re-planning exception:', e);
             }
@@ -361,6 +512,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
     startDate,
     originAirport,
     planningSession,
+    applyPlan,
   ]);
 
   const handleRefreshFlights = async (origin = originAirport) => {
@@ -429,8 +581,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
           includeMeals: true,
           weatherForecast: wthr.forecast,
         });
-        setComprehensivePlan(weatherPlan);
-        setGeneratedPlan(weatherPlan);
+        applyPlan(weatherPlan);
       }
     } catch (err) {
       console.warn('Weather refresh failed:', err);
@@ -496,8 +647,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
           weatherForecast: weather?.forecast,
           verifiedRoutes: updatedRoutesMap,
         });
-        setComprehensivePlan(updatedPlan);
-        setGeneratedPlan(updatedPlan);
+        applyPlan(updatedPlan);
       }
     } catch (err) {
       console.warn('Failed to verify live routes:', err);
@@ -1421,9 +1571,172 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                 0
               );
               const totalCompletedCount = allActiveItems.filter((item) => completedItemIds.has(item.id)).length;
+              const completionPercent = allActiveItems.length > 0
+                ? Math.round((totalCompletedCount / allActiveItems.length) * 100)
+                : 0;
 
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2xl)' }}>
+                  {/* Top Live Itinerary Summary Bar */}
+                  <div
+                    style={{
+                      backgroundColor: 'var(--color-vanilla-custard)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '14px 18px',
+                      boxShadow: 'var(--shadow-sm)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '12px',
+                      }}
+                    >
+                      {/* Left: Stops & Completion Progress */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Compass size={18} style={{ color: 'var(--color-cypress)' }} />
+                          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-heading)' }}>
+                            Live Itinerary Summary
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            color: 'var(--color-cypress)',
+                            backgroundColor: 'rgba(36, 92, 54, 0.08)',
+                            padding: '3px 10px',
+                            borderRadius: 'var(--radius-sm)',
+                            border: '1px solid rgba(36, 92, 54, 0.2)',
+                          }}
+                        >
+                          {allActiveItems.length} {allActiveItems.length === 1 ? 'stop' : 'stops'}
+                          {totalCompletedCount > 0 ? ` · ${totalCompletedCount} done (${completionPercent}%)` : ''}
+                        </span>
+                        {removedItemIds.size > 0 && (
+                          <span
+                            style={{
+                              fontSize: '0.78rem',
+                              fontWeight: 600,
+                              color: 'var(--color-wild-berry)',
+                              backgroundColor: 'rgba(231, 111, 81, 0.1)',
+                              padding: '3px 8px',
+                              borderRadius: 'var(--radius-sm)',
+                            }}
+                          >
+                            {removedItemIds.size} removed
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Right: Cost & Quick Actions */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                            Synchronized Total Cost ({travelers} {travelers === 1 ? 'traveller' : 'travellers'})
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', justifyContent: 'flex-end' }}>
+                            <span style={{ color: 'var(--color-cypress)', fontSize: '1.15rem', fontWeight: 800 }}>
+                              {formatINR(convertUsdToInr(totalTripCostUsd))}
+                            </span>
+                            {travelers > 1 && totalTripCostUsd > 0 && (
+                              <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                                ({formatINR(convertUsdToInr(totalTripCostUsd / travelers))}/person)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Stack LIFO Undo Button: Restores previous valid generated plan */}
+                        <button
+                          type="button"
+                          id="undo-last-plan-btn-top"
+                          onClick={undoLastPlan}
+                          disabled={historySize === 0}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            padding: '6px 14px',
+                            borderRadius: 'var(--radius-sm)',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            backgroundColor: historySize > 0 ? 'var(--color-cypress)' : 'rgba(0, 0, 0, 0.04)',
+                            color: historySize > 0 ? '#FFFFFF' : 'var(--text-muted)',
+                            border: historySize > 0 ? '1px solid var(--color-cypress)' : '1px solid var(--border-color)',
+                            cursor: historySize > 0 ? 'pointer' : 'not-allowed',
+                            boxShadow: historySize > 0 ? 'var(--shadow-sm)' : 'none',
+                            opacity: historySize > 0 ? 1 : 0.6,
+                            transition: 'all 150ms ease',
+                          }}
+                          title={
+                            historySize > 0
+                              ? `Restore previous itinerary plan (${historySize} in stack)`
+                              : 'No previous plan in history to restore'
+                          }
+                        >
+                          <Undo2 size={13} />
+                          Undo Last Plan{historySize > 0 ? ` (${historySize})` : ''}
+                        </button>
+
+                        {removedItemIds.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={restoreAllItems}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                              padding: '5px 12px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.78rem',
+                              fontWeight: 700,
+                              backgroundColor: 'var(--color-cypress)',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              cursor: 'pointer',
+                              boxShadow: 'var(--shadow-sm)',
+                            }}
+                            title="Restore all removed activities"
+                          >
+                            <Undo2 size={13} />
+                            Restore All ({removedItemIds.size})
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Progress Bar */}
+                    {allActiveItems.length > 0 && (
+                      <div
+                        style={{
+                          width: '100%',
+                          height: '5px',
+                          backgroundColor: 'rgba(0, 0, 0, 0.07)',
+                          borderRadius: '3px',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${completionPercent}%`,
+                            height: '100%',
+                            backgroundColor: 'var(--color-cypress)',
+                            transition: 'width 250ms ease-in-out',
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+
                   {/* Undo Notification Banner */}
                   {lastRemovedItem && (
                     <motion.div
@@ -1471,6 +1784,23 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                           <Undo2 size={13} />
                           Undo
                         </button>
+                        {removedHistory.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={restoreAllItems}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              fontSize: '0.78rem',
+                              color: 'var(--color-cypress)',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              textDecoration: 'underline',
+                            }}
+                          >
+                            Restore All ({removedItemIds.size})
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setLastRemovedItem(null)}
@@ -1491,13 +1821,13 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                   {/* Empty State when all activities across all days are removed */}
                   {allActiveItems.length === 0 ? (
                     <PaperCard stampText="ITINERARY CLEARED">
-                      <div style={{ textAlign: 'center', padding: 'var(--space-xl) var(--space-md)' }}>
-                        <Calendar size={36} style={{ color: 'var(--color-bamboo)', margin: '0 auto 12px auto' }} />
+                      <div style={{ textAlign: 'center', padding: 'var(--space-2xl) var(--space-md)' }}>
+                        <Calendar size={44} style={{ color: 'var(--color-bamboo)', margin: '0 auto 14px auto' }} />
                         <h4
                           style={{
                             fontFamily: 'var(--font-family-serif)',
                             margin: '0 0 8px 0',
-                            fontSize: '1.25rem',
+                            fontSize: '1.35rem',
                             color: 'var(--text-heading)',
                           }}
                         >
@@ -1505,37 +1835,89 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                         </h4>
                         <p
                           style={{
-                            margin: '0 0 16px 0',
-                            fontSize: '0.88rem',
+                            margin: '0 0 20px 0',
+                            fontSize: '0.9rem',
                             color: 'var(--text-muted)',
-                            maxWidth: '460px',
+                            maxWidth: '480px',
                             marginInline: 'auto',
-                            lineHeight: 1.5,
+                            lineHeight: 1.6,
                           }}
                         >
-                          You have removed all activities from your {dest.name} schedule. You can restore your removed activities or adjust your preferences above to re-plan.
+                          You have removed all activities from your {dest.name} schedule. You can restore your removed activities or regenerate a fresh itinerary tailored to your preferences.
                         </p>
-                        <button
-                          type="button"
-                          onClick={restoreAllItems}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            padding: '8px 18px',
-                            borderRadius: 'var(--radius-sm)',
-                            fontSize: '0.85rem',
-                            fontWeight: 700,
-                            backgroundColor: 'var(--color-cypress)',
-                            color: '#FFFFFF',
-                            border: 'none',
-                            cursor: 'pointer',
-                            boxShadow: 'var(--shadow-sm)',
-                          }}
-                        >
-                          <Undo2 size={15} />
-                          Restore All Activities ({removedItemIds.size})
-                        </button>
+                        <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={restoreAllItems}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '9px 20px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.85rem',
+                              fontWeight: 700,
+                              backgroundColor: 'var(--color-cypress)',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              cursor: 'pointer',
+                              boxShadow: 'var(--shadow-sm)',
+                            }}
+                          >
+                            <Undo2 size={15} />
+                            Restore All Activities ({removedItemIds.size})
+                          </button>
+                          <button
+                            type="button"
+                            id="undo-last-plan-btn-empty"
+                            onClick={undoLastPlan}
+                            disabled={historySize === 0}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '9px 20px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.85rem',
+                              fontWeight: 700,
+                              backgroundColor: historySize > 0 ? 'var(--color-cypress)' : 'rgba(0, 0, 0, 0.05)',
+                              color: historySize > 0 ? '#FFFFFF' : 'var(--text-muted)',
+                              border: historySize > 0 ? 'none' : '1px solid var(--border-color)',
+                              cursor: historySize > 0 ? 'pointer' : 'not-allowed',
+                              boxShadow: historySize > 0 ? 'var(--shadow-sm)' : 'none',
+                              opacity: historySize > 0 ? 1 : 0.6,
+                            }}
+                            title={
+                              historySize > 0
+                                ? `Restore previous itinerary plan (${historySize} in stack)`
+                                : 'No previous plan in history to restore'
+                            }
+                          >
+                            <Undo2 size={15} />
+                            Undo Last Plan{historySize > 0 ? ` (${historySize})` : ''}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={regenerateItinerary}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '9px 20px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.85rem',
+                              fontWeight: 700,
+                              backgroundColor: 'var(--color-vanilla-custard)',
+                              color: 'var(--color-cypress)',
+                              border: '1px solid var(--color-cypress)',
+                              cursor: 'pointer',
+                              boxShadow: 'var(--shadow-sm)',
+                            }}
+                          >
+                            <RotateCw size={15} />
+                            Regenerate Itinerary
+                          </button>
+                        </div>
                       </div>
                     </PaperCard>
                   ) : (
@@ -1623,7 +2005,10 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                   fontWeight: 700,
                                 }}
                               >
-                                Est. Cost: {formatINR(convertUsdToInr(dayCostUsd))} for {travelers} traveller(s)
+                                Est. Cost: {formatINR(convertUsdToInr(dayCostUsd))}
+                                {travelers > 1 && dayCostUsd > 0
+                                  ? ` total (${formatINR(convertUsdToInr(dayCostUsd / travelers))}/person)`
+                                  : ` for ${travelers} traveller${travelers === 1 ? '' : 's'}`}
                               </span>
                             </div>
                           </div>
@@ -1639,22 +2024,32 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                 textAlign: 'center',
                                 fontSize: '0.85rem',
                                 color: 'var(--text-muted)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '10px',
+                                flexWrap: 'wrap',
                               }}
                             >
-                              <span>All activities removed for Day {dayPlan.dayNumber}. </span>
+                              <span>All activities removed for Day {dayPlan.dayNumber}.</span>
                               <button
                                 type="button"
                                 onClick={() => restoreDayItems(dayPlan.timelineItems.map((i) => i.id))}
                                 style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
                                   background: 'none',
-                                  border: 'none',
+                                  border: '1px solid var(--color-cypress)',
+                                  borderRadius: 'var(--radius-sm)',
+                                  padding: '3px 10px',
                                   color: 'var(--color-cypress)',
                                   fontWeight: 700,
                                   cursor: 'pointer',
-                                  textDecoration: 'underline',
-                                  marginLeft: '4px',
+                                  fontSize: '0.78rem',
                                 }}
                               >
+                                <Undo2 size={13} />
                                 Restore Day {dayPlan.dayNumber} activities
                               </button>
                             </div>
@@ -1694,7 +2089,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                       isCompleted
                                         ? {
                                             border: '2px solid var(--color-cypress)',
-                                            backgroundColor: 'rgba(36, 92, 54, 0.05)',
+                                            backgroundColor: 'rgba(36, 92, 54, 0.06)',
                                           }
                                         : undefined
                                     }
@@ -1741,7 +2136,14 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                       </span>
                                     </div>
 
-                                    <p style={{ margin: '0 0 10px 0', fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                                    <p
+                                      style={{
+                                        margin: '0 0 10px 0',
+                                        fontSize: '0.88rem',
+                                        color: 'var(--text-primary)',
+                                        opacity: isCompleted ? 0.82 : 1,
+                                      }}
+                                    >
                                       {item.description}
                                     </p>
 
@@ -1830,12 +2232,16 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                         gap: '6px',
                                       }}
                                     >
-                                      <span>⏱️ {item.startTime} - {item.endTime} (~{item.durationMinutes} min)</span>
+                                      <span>⏱️ {item.startTime} – {item.endTime} (~{item.durationMinutes} min)</span>
                                       <span style={{ fontWeight: 600 }}>
                                         {typeof item.costForGroup === 'number'
                                           ? item.costForGroup === 0
                                             ? 'Free Admission'
-                                            : `${formatINR(convertUsdToInr(item.costForGroup))} total`
+                                            : `${formatINR(convertUsdToInr(item.costForGroup))} total${
+                                                travelers > 1
+                                                  ? ` (${formatINR(convertUsdToInr(item.costForGroup / travelers))}/person)`
+                                                  : ''
+                                              }`
                                           : 'Admission unrecorded'}
                                       </span>
                                     </div>
@@ -1870,7 +2276,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                                           display: 'inline-flex',
                                           alignItems: 'center',
                                           gap: '5px',
-                                          padding: '4px 10px',
+                                          padding: '5px 12px',
                                           borderRadius: 'var(--radius-sm)',
                                           fontSize: '0.75rem',
                                           fontWeight: 700,
@@ -1927,7 +2333,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                       padding: 'var(--space-md)',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '6px',
+                      gap: '8px',
                       fontSize: '0.85rem',
                       color: 'var(--text-primary)',
                     }}
@@ -1946,7 +2352,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                       <div>
                         <span>
                           Total Trip Cost ({days} {days === 1 ? 'day' : 'days'}, {travelers}{' '}
-                          {travelers === 1 ? 'person' : 'people'}):
+                          {travelers === 1 ? 'traveller' : 'travellers'}):
                         </span>
                         <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600, marginTop: '2px' }}>
                           {allActiveItems.length} active {allActiveItems.length === 1 ? 'stop' : 'stops'}
@@ -1955,17 +2361,53 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <span style={{ color: 'var(--color-cypress)', fontSize: '1.05rem', fontWeight: 800 }}>
-                          {formatINR(convertUsdToInr(totalTripCostUsd))}
-                        </span>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                          {' '}/ {formatINR(budgetInr)} Allocated Budget
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', justifyContent: 'flex-end' }}>
+                          <span style={{ color: 'var(--color-cypress)', fontSize: '1.15rem', fontWeight: 800 }}>
+                            {formatINR(convertUsdToInr(totalTripCostUsd))}
+                          </span>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            / {formatINR(budgetInr)} Allocated Budget
+                          </span>
+                        </div>
+                        {travelers > 1 && totalTripCostUsd > 0 && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            {formatINR(convertUsdToInr(totalTripCostUsd / travelers))} per traveller
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    {removedItemIds.size > 0 && (
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                    {/* Itinerary plan quick actions bar */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        id="undo-last-plan-btn-bottom"
+                        onClick={undoLastPlan}
+                        disabled={historySize === 0}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          padding: '4px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          backgroundColor: historySize > 0 ? 'transparent' : 'rgba(0, 0, 0, 0.03)',
+                          color: historySize > 0 ? 'var(--color-cypress)' : 'var(--text-muted)',
+                          border: historySize > 0 ? '1px solid var(--color-cypress)' : '1px solid var(--border-color)',
+                          cursor: historySize > 0 ? 'pointer' : 'not-allowed',
+                          opacity: historySize > 0 ? 1 : 0.5,
+                        }}
+                        title={
+                          historySize > 0
+                            ? `Restore previous itinerary plan (${historySize} in stack)`
+                            : 'No previous plan in history to restore'
+                        }
+                      >
+                        <Undo2 size={12} />
+                        Undo Last Plan{historySize > 0 ? ` (${historySize})` : ''}
+                      </button>
+                      {removedItemIds.size > 0 && (
                         <button
                           type="button"
                           onClick={restoreAllItems}
@@ -1973,7 +2415,7 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '5px',
-                            padding: '4px 10px',
+                            padding: '4px 12px',
                             borderRadius: 'var(--radius-sm)',
                             fontSize: '0.75rem',
                             fontWeight: 700,
@@ -1986,8 +2428,28 @@ export const DestinationArrivalSection: React.FC<DestinationArrivalSectionProps>
                           <Undo2 size={12} />
                           Restore All ({removedItemIds.size} removed)
                         </button>
-                      </div>
-                    )}
+                      )}
+                      <button
+                        type="button"
+                        onClick={regenerateItinerary}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          padding: '4px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          backgroundColor: 'transparent',
+                          color: 'var(--color-cypress)',
+                          border: '1px solid var(--color-cypress)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <RotateCw size={12} />
+                        Regenerate Itinerary
+                      </button>
+                    </div>
 
                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>
                       📌 {comprehensivePlan.disclaimerNote}

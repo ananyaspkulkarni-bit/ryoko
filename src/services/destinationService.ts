@@ -1,4 +1,5 @@
 import { MOCK_DESTINATIONS } from '../data/destinations';
+import { destinationMap } from '../ds/DestinationMap';
 import type { Destination } from '../types';
 
 export interface IDestinationService {
@@ -13,7 +14,7 @@ class DestinationService implements IDestinationService {
   }
 
   getDestinationById(id: string): Destination | undefined {
-    return MOCK_DESTINATIONS.find((d) => d.id === id);
+    return destinationMap.get(id);
   }
 
   searchDestinations(query: string): Destination[] {
